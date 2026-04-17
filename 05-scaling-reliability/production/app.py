@@ -21,29 +21,40 @@ import time
 import json
 import logging
 import uuid
+import redis
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
-
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Depends, Security
+from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
-from utils.mock_llm import ask
 
-# ── Redis (optional — fallback to in-memory dict nếu không có Redis)
+from utils.mock_llm import ask
+from rate_limiter import rate_limiter_user
+from cost_guard import cost_guard
+
+# ── Redis Setup
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 try:
-    import redis
-    REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     _redis = redis.from_url(REDIS_URL, decode_responses=True)
     _redis.ping()
     USE_REDIS = True
-    print("✅ Connected to Redis")
 except Exception:
     USE_REDIS = False
     _memory_store: dict = {}
-    print("⚠️  Redis not available — using in-memory store (not scalable!)")
+    logger = logging.getLogger(__name__)
+    logger.warning("Redis not available — using in-memory store (not scalable!)")
 
+# ── Auth Setup
+AGENT_API_KEY = os.getenv("AGENT_API_KEY", "dev-key-123")
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+def verify_api_key(api_key: str = Security(api_key_header)):
+    if api_key != AGENT_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    return "default_user" # Simplified for demo
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -100,7 +111,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Stateless Agent",
-    version="4.0.0",
+    version="5.0.0",
     lifespan=lifespan,
 )
 
@@ -126,34 +137,41 @@ class ChatRequest(BaseModel):
 # ──────────────────────────────────────────────────────────
 
 @app.post("/chat")
-async def chat(body: ChatRequest):
+async def chat(
+    body: ChatRequest, 
+    user_id: str = Depends(verify_api_key)
+):
     """
     Multi-turn conversation với session management.
-
-    Gửi session_id trong các request tiếp theo để tiếp tục cuộc trò chuyện.
-    Agent có thể chạy trên bất kỳ instance nào — state trong Redis.
     """
-    # Tạo hoặc dùng session hiện có
-    session_id = body.session_id or str(uuid.uuid4())
+    # 1. Rate Limit
+    rate_info = rate_limiter_user.check(user_id)
+    
+    # 2. Budget Check
+    cost_guard.check_budget(user_id)
 
-    # Thêm câu hỏi vào history
+    # 3. Session Logic
+    session_id = body.session_id or str(uuid.uuid4())
     append_to_history(session_id, "user", body.question)
 
-    # Gọi LLM với context (trong mock, ta chỉ dùng câu hỏi hiện tại)
-    session = load_session(session_id)
-    history = session.get("history", [])
+    # 4. LLM Call
     answer = ask(body.question)
+    
+    # 5. Record Usage
+    in_t = len(body.question.split()) * 2
+    out_t = len(answer.split()) * 2
+    cost_guard.record_usage(user_id, in_t, out_t)
 
-    # Lưu response vào history
     append_to_history(session_id, "assistant", answer)
 
     return {
         "session_id": session_id,
-        "question": body.question,
         "answer": answer,
-        "turn": len([m for m in history if m["role"] == "user"]) + 1,
-        "served_by": INSTANCE_ID,  # ← thấy rõ bất kỳ instance nào cũng serve được
-        "storage": "redis" if USE_REDIS else "in-memory",
+        "served_by": INSTANCE_ID,
+        "usage": {
+            "remaining_requests": rate_info["remaining"],
+            "storage": "redis" if USE_REDIS else "memory"
+        }
     }
 
 
