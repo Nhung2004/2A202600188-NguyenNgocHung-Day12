@@ -30,9 +30,9 @@
 
 ### Exercise 2.3: Image size comparison
 - **Develop Image Size**: 1.66 GB
-- **Production Image Size**: ~200-300 MB (Estimated, as multi-stage build removes build tools and uses a slim base image).
-- **Difference**: Over 80% reduction in size.
-- **Why?**: The production version uses `python:3.11-slim` instead of the full `python:3.11` image and excludes build-time dependencies (like `gcc`) from the final runtime image.
+- **Production Image Size**: 214 MB
+- **Difference**: 87% reduction in size.
+- **Why?**: The production version uses `python:3.11-slim` (multi-stage) which stripped away 1.4GB of build-time dependencies.
 
 ## Part 3: Cloud Deployment
 
@@ -43,8 +43,9 @@
   2. Added a **Redis** service to the project canvas.
   3. Configured environment variables: `PORT=8000`, `AGENT_API_KEY`.
   4. Railway automatically detected the Dockerfile and deployed the service.
-- **Verification**: The agent is accessible via- URL: https://production-ai-agent.up.railway.app
-- Screenshot: [Railway Dashboard](screenshots/dashboard.png)
+- **Verification**: The agent is accessible via:
+  - URL: https://2a202600188-nguyenngochung-day12-production.up.railway.app
+  - Screenshot: [Railway Dashboard](screenshots/dashboard.png)
 Health and Ready checks return 200 OK.
 
 ### Exercise 3.2: Comparison between Railway and Render
